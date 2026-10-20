@@ -23,7 +23,6 @@ import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
 import com.movtery.zalithlauncher.R
-import com.movtery.zalithlauncher.context.COPY_LABEL_DEVICE_CODE
 import com.movtery.zalithlauncher.coroutine.Task
 import com.movtery.zalithlauncher.coroutine.TaskSystem
 import com.movtery.zalithlauncher.game.account.auth_server.AuthServerHelper
@@ -32,18 +31,17 @@ import com.movtery.zalithlauncher.game.account.auth_server.data.AuthServer
 import com.movtery.zalithlauncher.game.account.auth_server.getAuthServeInfo
 import com.movtery.zalithlauncher.game.account.microsoft.AsyncStatus
 import com.movtery.zalithlauncher.game.account.microsoft.AuthType
+import com.movtery.zalithlauncher.game.account.microsoft.MicrosoftWebLoginBridge
 import com.movtery.zalithlauncher.game.account.microsoft.MinecraftProfileException
 import com.movtery.zalithlauncher.game.account.microsoft.NotPurchasedMinecraftException
 import com.movtery.zalithlauncher.game.account.microsoft.XboxLoginException
-import com.movtery.zalithlauncher.game.account.microsoft.fetchDeviceCodeResponse
-import com.movtery.zalithlauncher.game.account.microsoft.getTokenResponse
+import com.movtery.zalithlauncher.game.account.microsoft.getTokenByAuthCode
 import com.movtery.zalithlauncher.game.account.microsoft.microsoftAuthAsync
 import com.movtery.zalithlauncher.game.account.microsoft.toLocal
 import com.movtery.zalithlauncher.path.URL_USER_AGENT
 import com.movtery.zalithlauncher.ui.AndroidStringText
 import com.movtery.zalithlauncher.ui.androidText
 import com.movtery.zalithlauncher.ui.screens.content.elements.MicrosoftLoginOperation
-import com.movtery.zalithlauncher.utils.copyText
 import com.movtery.zalithlauncher.utils.logging.Logger
 import com.movtery.zalithlauncher.utils.network.toLocal
 import com.movtery.zalithlauncher.viewmodel.ErrorViewModel
@@ -104,6 +102,12 @@ private const val MICROSOFT_LOGGING_TASK = "microsoft_logging_task"
  */
 fun isMicrosoftLogging() = TaskSystem.containsTask(MICROSOFT_LOGGING_TASK)
 
+/**
+ * Вход в Microsoft-аккаунт в стиле Pojav: открывается окно с WebView,
+ * после входа забираем код авторизации и меняем его на токены.
+ * Параметры toWeb, backToMain, checkIfInWebScreen оставлены для совместимости
+ * с остальным кодом и больше не используются.
+ */
 fun microsoftLogin(
     context: Context,
     toWeb: (url: String) -> Unit,
@@ -119,31 +123,18 @@ fun microsoftLogin(
         task = { task ->
             Logger.info(TAG, "Starting Microsoft account login")
             task.updateProgress(-1f)
-            task.updateMessage(androidText(R.string.account_microsoft_fetch_device_code))
-            val deviceCode = fetchDeviceCodeResponse(coroutineContext)
-            Logger.debug(TAG, "Device code received, verification url: ${deviceCode.verificationUrl}, expires in ${deviceCode.expiresIn}s")
-            copyText(COPY_LABEL_DEVICE_CODE, deviceCode.userCode, context, false)
-            showToast(
-                androidText(R.string.account_microsoft_coped_device_code, deviceCode.userCode),
-                Toast.LENGTH_SHORT
-            )
-            toWeb(deviceCode.verificationUrl)
-            task.updateProgress(-1f)
-            task.updateMessage(androidText(R.string.account_microsoft_get_token, deviceCode.userCode))
-            val tokenResponse = getTokenResponse(deviceCode, coroutineContext) { time ->
-                (!checkIfInWebScreen()).also { exit ->
-                    if (exit && time > 0) {
-                        //如果已退出网页，则视为用户想要退出登录
-                        //弹出提示
-                        Logger.debug(TAG, "User left the web page during device code polling")
-                        showToast(
-                            androidText(R.string.account_microsoft_exit_by_user),
-                            Toast.LENGTH_LONG
-                        )
-                    }
-                }
+            task.updateMessage(androidText(R.string.account_microsoft_getting_access_token))
+            //Открываем окно входа Microsoft и ждём код авторизации
+            val code = MicrosoftWebLoginBridge.requestCode(context)
+            if (code == null) {
+                Logger.debug(TAG, "User closed the Microsoft login window")
+                showToast(
+                    androidText(R.string.account_microsoft_exit_by_user),
+                    Toast.LENGTH_LONG
+                )
+                throw CancellationException("Microsoft login window closed by user")
             }
-            backToMain()
+            val tokenResponse = getTokenByAuthCode(code, coroutineContext)
             val account = microsoftAuth(
                 AuthType.Access,
                 tokenResponse.refreshToken,
