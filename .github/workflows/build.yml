@@ -23,10 +23,12 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch: ["all", "arm", "arm64", "x86", "x86_64"]
+        arch: ["all"]
       fail-fast: false
 
     env:
+      # Если вариант не передан (ручной запуск), собираем Debug
+      VARIANT: ${{ inputs.variant || 'Debug' }}
       KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
       STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
       OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
@@ -52,21 +54,19 @@ jobs:
       - name: Build APK for ${{ matrix.arch }}
         run: |
           chmod +x gradlew
-          ./gradlew ZalithLauncher:assemble${{ inputs.variant }} -Darch=${{ matrix.arch }}
+          ./gradlew ZalithLauncher:assemble${{ env.VARIANT }} -Darch=${{ matrix.arch }}
 
       - name: Upload Release APK for ${{ matrix.arch }}
-        if: inputs.variant == 'Release'
+        if: env.VARIANT == 'Release'
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
-          # archive:false tek dosya yükler ve zip yapmaz.
-          # Bu modda "name" parametresi dikkate alınmaz; artifact adı yüklenen dosyanın adı olur.
           name: release apk (${{ matrix.arch }})
           path: ZalithLauncher/build/outputs/apk/release/*.apk
           archive: false
 
       - name: Upload Debug APK for ${{ matrix.arch }}
-        if: inputs.variant == 'Debug'
+        if: env.VARIANT == 'Debug'
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
