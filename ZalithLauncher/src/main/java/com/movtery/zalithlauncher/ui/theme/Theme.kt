@@ -678,7 +678,7 @@ fun ZalithLauncherTheme(
         LocalFestivals provides festivals
     ) {
         MaterialExpressiveTheme(
-            colorScheme = currentDisplayScheme,
+            colorScheme = currentDisplayScheme.withGlass(),
             motionScheme = MotionScheme.expressive(),
             typography = AppTypography,
             content = content
