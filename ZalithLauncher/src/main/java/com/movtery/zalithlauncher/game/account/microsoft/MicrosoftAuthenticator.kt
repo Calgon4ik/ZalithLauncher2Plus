@@ -61,6 +61,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.Parameters
 import io.ktor.http.contentType
+import java.net.URLEncoder
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -78,6 +79,17 @@ private const val TAG = "MicrosoftAuth"
 
 private val SCOPES = listOf("XboxLive.signin", "offline_access", "openid", "profile", "email")
 private const val TENANT = "/consumers"
+
+// Вход в стиле Pojav: WebView + клиент старого лаунчера Mojang
+private const val POJAV_CLIENT_ID = "00000000402b5328"
+const val POJAV_REDIRECT_URI = "https://login.live.com/oauth20_desktop.srf"
+private const val POJAV_SCOPE = "service::user.auth.xboxlive.com::MBI_SSL"
+
+val POJAV_AUTH_URL: String
+    get() = "$LIVE_AUTH_URL/oauth20_authorize.srf" +
+        "?client_id=$POJAV_CLIENT_ID&response_type=code" +
+        "&redirect_uri=" + URLEncoder.encode(POJAV_REDIRECT_URI, "UTF-8") +
+        "&scope=" + URLEncoder.encode(POJAV_SCOPE, "UTF-8")
 
 /**
  * 轮询令牌时允许的最大连续网络失败次数
@@ -200,6 +212,28 @@ suspend fun getTokenResponse(
 }
 
 /**
+ * Обмен кода авторизации (из WebView) на access и refresh токены
+ */
+suspend fun getTokenByAuthCode(code: String, context: CoroutineContext): TokenResponse = withRetry {
+    val response = submitForm<JsonObject>(
+        url = "$LIVE_AUTH_URL/oauth20_token.srf",
+        parameters = Parameters.build {
+            append("client_id", POJAV_CLIENT_ID)
+            append("code", code)
+            append("grant_type", "authorization_code")
+            append("redirect_uri", POJAV_REDIRECT_URI)
+            append("scope", POJAV_SCOPE)
+        },
+        context = context
+    )
+    TokenResponse(
+        accessToken = response["access_token"].text(),
+        refreshToken = response["refresh_token"].text(),
+        expiresIn = response["expires_in"]?.jsonPrimitive?.int ?: 0
+    )
+}
+
+/**
  * 从 OAuth 错误响应中解析 error 字段
  */
 private suspend fun ClientRequestException.errorCode(): String? {
@@ -253,9 +287,11 @@ private suspend fun refreshAccessToken(
         val response = submitForm<JsonObject>(
             url = "$LIVE_AUTH_URL/oauth20_token.srf",
             parameters = Parameters.build {
-                append("client_id", BuildKeys.OAUTH_CLIENT_ID)
+                append("client_id", POJAV_CLIENT_ID)
                 append("refresh_token", refreshToken)
                 append("grant_type", "refresh_token")
+                append("redirect_uri", POJAV_REDIRECT_URI)
+                append("scope", POJAV_SCOPE)
             },
             context = context
         )
@@ -296,16 +332,16 @@ private suspend fun authenticateXBL(accessToken: String, update: (AsyncStatus) -
     }
 
     return withRetry {
-        try {
-            requestXblToken("d=$accessToken")
-        } catch (e: ClientRequestException) {
-            // 参考 Wiki：RpsTicket 如遇 400 Bad Request，可尝试去掉 "d=" 前缀重新请求
-            // https://zh.minecraft.wiki/w/Tutorial:%E7%BC%96%E5%86%99%E5%90%AF%E5%8A%A8%E5%99%A8#Xbox_Live%E8%BA%AB%E4%BB%BD%E9%AA%8C%E8%AF%81
-            if (e.response.status.value == 400) {
-                Logger.warning(TAG, "XBL authentication rejected the d= prefixed RpsTicket, retrying without the prefix")
-                requestXblToken(accessToken)
-            } else throw e
+        var last: ClientRequestException? = null
+        for (ticket in listOf("t=$accessToken", "d=$accessToken", accessToken)) {
+            try {
+                return@withRetry requestXblToken(ticket)
+            } catch (e: ClientRequestException) {
+                if (e.response.status.value != 400) throw e
+                last = e
+            }
         }
+        throw last!!
     }
 }
 
